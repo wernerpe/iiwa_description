@@ -226,6 +226,38 @@ class IiwaXacroProcessor:
             if tag and tag != element.tag:
                 element.tag = tag
         
+        # undo the the iiwa7 macro to reveal the urdf, detete the first joint with the parent substitutions
+        # and then delete all other macros
+        for macro_el in root.findall('.//macro'):
+            if not macro_el.attrib['name'] == 'iiwa7':
+                parent = macro_el.getparent()
+                parent.remove(macro_el)
+            else:
+                children = macro_el.getchildren() 
+                parent = macro_el.getparent()
+                parent.remove(macro_el) 
+                for c in children:
+                    if c.tag == 'iiwa_gazebo':
+                        continue
+                    if c.tag == 'iiwa_transmission':
+                        continue
+                    if not 'name' in c.keys():
+                        parent.append(c)
+                        continue
+                    if c.attrib['name']!= "${parent}_iiwa_joint":
+                        parent.append(c)
+
+
+        for n in ['self_collision_checking', 'iiwa7']:
+            for el in root.findall(f'.//{n}'):
+                parent = el.getparent()
+                parent.remove(el)
+
+        for el in root.findall('.//link'):
+            if el.attrib['name'] =='world':
+                parent = el.getparent()
+                parent.remove(el)
+
         # Write the processed XML to file
         tree = ET.ElementTree(root)
         tree.write(output_file, 
@@ -251,8 +283,8 @@ def convert_iiwa_xacro(package_path, input_file, output_file):
         print(f"Failed to convert {input_file}")
 
 if __name__ == "__main__":
-    package_path = "."
-    input_file = "urdf/iiwa7.urdf.xacro"
-    output_file = "urdf_output/iiwa7.urdf"
+    package_path = "assets/iiwa"
+    input_file = "assets/iiwa/urdf/iiwa7.urdf.xacro"
+    output_file = "assets/iiwa/urdf_output/iiwa7.urdf"
     
     convert_iiwa_xacro(package_path, input_file, output_file)
