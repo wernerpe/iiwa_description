@@ -8,8 +8,8 @@ class IiwaXacroProcessor:
     def __init__(self, package_path):
         self.package_path = Path(package_path)
         self.properties = {
-            'PI': math.pi,  # Built-in constant
-            'max_effort': 300,  # Default values - you might want to adjust these
+            'PI': math.pi,
+            'max_effort': 300,
             'max_velocity': 10,
             'safety_controller_k_pos': 100,
             'safety_controller_k_vel': 2,
@@ -34,29 +34,52 @@ class IiwaXacroProcessor:
         except Exception as e:
             print(f"Error loading {filepath}: {e}")
             return None
-    
+
     def evaluate_expression(self, expr):
         """Evaluate a mathematical expression with property substitution"""
         if expr is None:
             return expr
-            
+        
         # First handle $(arg ...) substitution
         def replace_arg(match):
             arg_name = match.group(1)
             if arg_name in self.args:
                 return str(self.args[arg_name])
+            print(f"Warning: Argument '{arg_name}' not found")
             return match.group(0)
         
-        expr = re.sub(r'\$\(arg ([^)]+)\)', replace_arg, expr)
+        expr = re.sub(r'\$\(arg ([^)]+)\)', replace_arg, str(expr))
         
         # Then handle ${...} substitution
         def replace_var(match):
-            var_name = match.group(1)
+            var_name = match.group(1).strip()
+            # First check if it's a property or argument
             if var_name in self.properties:
                 return str(self.properties[var_name])
             elif var_name in self.args:
                 return str(self.args[var_name])
-            return match.group(0)
+            # If not found as property/arg, try evaluating as mathematical expression
+            try:
+                safe_dict = {
+                    'PI': math.pi,
+                    'pi': math.pi,
+                    'sin': math.sin,
+                    'cos': math.cos,
+                    'tan': math.tan,
+                    'asin': math.asin,
+                    'acos': math.acos,
+                    'atan': math.atan,
+                    'atan2': math.atan2,
+                    'abs': abs,
+                    'pow': pow
+                }
+                result = eval(var_name, {"__builtins__": {}}, safe_dict)
+                if isinstance(result, float):
+                    return f"{result:.6f}".rstrip('0').rstrip('.')
+                return str(result)
+            except Exception as e:
+                print(f"Warning: Neither property nor valid expression '{var_name}' found")
+                return match.group(0)
         
         expr = re.sub(r'\$\{([^}]+)\}', replace_var, expr)
         
@@ -64,8 +87,8 @@ class IiwaXacroProcessor:
         if not any(c in expr for c in '+-*/()'):
             return expr
             
+        # Evaluate any remaining mathematical expression
         try:
-            # Create a safe dictionary of allowed operations
             safe_dict = {
                 'PI': math.pi,
                 'pi': math.pi,
@@ -80,10 +103,8 @@ class IiwaXacroProcessor:
                 'pow': pow
             }
             
-            # Evaluate the expression
             result = eval(expr, {"__builtins__": {}}, safe_dict)
             
-            # Format the result to avoid excessive decimal places
             if isinstance(result, float):
                 return f"{result:.6f}".rstrip('0').rstrip('.')
             return str(result)
@@ -115,7 +136,6 @@ class IiwaXacroProcessor:
         name = element.get('name')
         value = element.get('value')
         if name and value:
-            # Evaluate the value if it's an expression
             evaluated_value = self.evaluate_expression(value)
             self.properties[name] = evaluated_value
             print(f"Property defined: {name} = {evaluated_value}")
@@ -125,21 +145,32 @@ class IiwaXacroProcessor:
         name = element.get('name')
         default = element.get('default')
         if name:
-            evaluated_default = self.evaluate_expression(default) if default else default
-            self.args[name] = evaluated_default
-            print(f"Argument defined: {name} = {evaluated_default}")
+            if name not in self.args:  # Only set if not already defined
+                evaluated_default = self.evaluate_expression(default) if default else default
+                self.args[name] = evaluated_default
+                print(f"Argument defined: {name} = {evaluated_default}")
     
     def substitute_expressions(self, text):
-        """Substitute ${expressions} with their evaluated values"""
+        """Substitute ${expressions} and $(arg ...) with their evaluated values"""
         if text is None:
             return text
-            
-        def replace_match(match):
+        
+        # First substitute $(arg ...) expressions
+        def replace_arg(match):
+            arg_name = match.group(1)
+            if arg_name in self.args:
+                return str(self.args[arg_name])
+            print(f"Warning: Argument '{arg_name}' not found")
+            return match.group(0)
+        
+        text = re.sub(r'\$\(arg ([^)]+)\)', replace_arg, str(text))
+        
+        # Then substitute ${...} expressions
+        def replace_expr(match):
             expr = match.group(1)
-            return self.evaluate_expression(expr)
-            
-        pattern = r'\$\{([^}]+)\}'
-        return re.sub(pattern, replace_match, text)
+            return self.evaluate_expression('${'+expr+'}')
+        
+        return re.sub(r'\$\{([^}]+)\}', replace_expr, text)
     
     def process_element(self, element, current_dir):
         """Process a XACRO element and its children"""
@@ -161,11 +192,14 @@ class IiwaXacroProcessor:
                         idx += 1
         elif tag == 'property':
             self.process_property(element)
+            element.getparent().remove(element)
         elif tag == 'arg':
             self.process_arg(element)
+            element.getparent().remove(element)
+            return
             
         # Process attributes
-        for key, value in element.attrib.items():
+        for key, value in list(element.attrib.items()):
             element.attrib[key] = self.substitute_expressions(value)
             
         # Process child elements
@@ -173,16 +207,18 @@ class IiwaXacroProcessor:
             self.process_element(child, current_dir)
     
     def convert(self, input_file, output_file):
+        """Convert XACRO file to URDF"""
         ET.register_namespace('xacro', "http://www.ros.org/wiki/xacro")
         print(f"Processing input file: {input_file}")
         
         root = self.load_xacro_file(input_file)
         if root is None:
             return False
-            
+        
+        # Process all elements
         self.process_element(root, os.path.dirname(input_file))
         
-        # Clean up remaining xacro elements
+        # Clean up remaining xacro elements and namespaces
         for element in root.iter():
             if isinstance(element, ET._Comment):
                 continue
@@ -190,6 +226,7 @@ class IiwaXacroProcessor:
             if tag and tag != element.tag:
                 element.tag = tag
         
+        # Write the processed XML to file
         tree = ET.ElementTree(root)
         tree.write(output_file, 
                   xml_declaration=True, 
@@ -216,6 +253,6 @@ def convert_iiwa_xacro(package_path, input_file, output_file):
 if __name__ == "__main__":
     package_path = "."
     input_file = "urdf/iiwa7.urdf.xacro"
-    output_file = "iiwa7_2.urdf"
+    output_file = "urdf_output/iiwa7.urdf"
     
     convert_iiwa_xacro(package_path, input_file, output_file)
